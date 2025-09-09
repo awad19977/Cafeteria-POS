@@ -1,8 +1,11 @@
 import sql from "@/app/api/utils/sql";
 
-// Add GET method for testing/debugging
+// GET for quick health check
 export async function GET(request) {
-  return Response.json({ message: "Login API is working" }, { status: 200 });
+  return new Response(
+    JSON.stringify({ message: "Login API is working" }),
+    { status: 200, headers: { "Content-Type": "application/json" } }
+  );
 }
 
 export async function POST(request) {
@@ -10,9 +13,9 @@ export async function POST(request) {
     const { username, password } = await request.json();
 
     if (!username || !password) {
-      return Response.json(
-        { error: "Username and password are required" },
-        { status: 400 },
+      return new Response(
+        JSON.stringify({ error: "Username and password are required" }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
       );
     }
 
@@ -24,47 +27,46 @@ export async function POST(request) {
     `;
 
     if (users.length === 0) {
-      return Response.json(
-        { error: "Invalid username or password" },
-        { status: 401 },
+      return new Response(
+        JSON.stringify({ error: "Invalid username or password" }),
+        { status: 401, headers: { "Content-Type": "application/json" } }
       );
     }
 
     const user = users[0];
 
-    // Simplified password verification for demo
-    // Check if password matches either the plain text or the hash stored
+    // Simplified password verification (demo)
     let isValidPassword = false;
 
-    // For demo admin user
     if (user.username === "admin" && password === "admin123") {
       isValidPassword = true;
-    }
-    // For simple stored passwords (demo)
-    else if (user.password_hash === password) {
+    } else if (user.password_hash === password) {
       isValidPassword = true;
-    }
-    // For users created through the admin interface with simple hashing
-    else if (user.password_hash === `hashed_${password}`) {
+    } else if (user.password_hash === `hashed_${password}`) {
       isValidPassword = true;
     }
 
     if (!isValidPassword) {
-      return Response.json(
-        { error: "Invalid username or password" },
-        { status: 401 },
+      return new Response(
+        JSON.stringify({ error: "Invalid username or password" }),
+        { status: 401, headers: { "Content-Type": "application/json" } }
       );
     }
 
-    // Return user data without password
     const { password_hash, ...userWithoutPassword } = user;
 
-    return Response.json({
-      success: true,
-      user: userWithoutPassword,
-    });
+    return new Response(
+      JSON.stringify({
+        user: userWithoutPassword,
+        message: "Login successful",
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
   } catch (error) {
     console.error("Login error:", error);
-    return Response.json({ error: "Internal server error" }, { status: 500 });
+    return new Response(
+      JSON.stringify({ error: "Internal server error" }),
+      { status: 500, headers: { "Content-Type": "application/json" } }
+    );
   }
 }
