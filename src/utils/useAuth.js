@@ -1,5 +1,7 @@
 import { useCallback } from "react";
 
+const STORAGE_KEY = "currentUser";
+
 function useAuth() {
   const signInWithCredentials = useCallback(
     async ({ username, password, callbackUrl }) => {
@@ -12,22 +14,21 @@ function useAuth() {
           body: JSON.stringify({ username, password }),
         });
 
-        if (!response.ok) {
-          const data = await response.json();
-          throw new Error(data.error || "Login failed");
-        }
-
         const data = await response.json();
 
-        // Store user data in localStorage
-        localStorage.setItem("user", JSON.stringify(data.user));
+        if (!response.ok) {
+          throw new Error(data.error || data.message || "Login failed");
+        }
+
+        // Store user data in localStorage under the agreed key
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data.user));
 
         // Redirect if callbackUrl provided
         if (callbackUrl) {
           window.location.href = callbackUrl;
         } else {
           // Redirect based on role
-          if (data.user.role === "admin") {
+          if (data.user && data.user.role === "admin") {
             window.location.href = "/dashboard";
           } else {
             window.location.href = "/pos";
@@ -43,27 +44,23 @@ function useAuth() {
   );
 
   const signUpWithCredentials = useCallback(() => {
-    // Not implemented in current system
     throw new Error("Sign up not implemented in current system");
   }, []);
 
   const signInWithGoogle = useCallback(() => {
-    // Not implemented in current system
     throw new Error("Google sign in not implemented in current system");
   }, []);
 
   const signInWithFacebook = useCallback(() => {
-    // Not implemented in current system
     throw new Error("Facebook sign in not implemented in current system");
   }, []);
 
   const signInWithTwitter = useCallback(() => {
-    // Not implemented in current system
     throw new Error("Twitter sign in not implemented in current system");
   }, []);
 
   const signOut = useCallback(() => {
-    localStorage.removeItem("user");
+    localStorage.removeItem(STORAGE_KEY);
     window.location.href = "/";
   }, []);
 
