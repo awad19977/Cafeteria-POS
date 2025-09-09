@@ -1,6 +1,7 @@
-################################################################################
-# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
-################################################################################
+.DS_Store
+/node_modules/
 
+# React Router
+/.react-router/
+/build/
 /.vs
-.env
