@@ -1,6 +1,6 @@
 const authActions = [
     "providers",
-    "session",
+    // "session", // removed so session requests go to our session route directly
     "csrf",
     "signin",
     "signout",
