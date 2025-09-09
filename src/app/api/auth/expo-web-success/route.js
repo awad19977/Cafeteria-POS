@@ -1,23 +1,14 @@
-export async function GET(request) {
-  // For the current authentication system, we'll just redirect to login
-  // since this app uses localStorage-based authentication
-  return new Response(
-    `
-    <html>
-      <body>
-        <script>
-          // Redirect to the main login page
-          window.parent.postMessage({ type: 'AUTH_REDIRECT', url: '/' }, '*');
-          // Also try direct redirect
-          window.location.href = '/';
-        </script>
-      </body>
-    </html>
-    `,
-    {
-      headers: {
-        "Content-Type": "text/html",
-      },
-    },
-  );
+export async function GET() {
+  try {
+    console.log("[/api/auth/expo-web-success] GET called");
+  } catch (e) {}
+  return Response.json({ ok: true, message: "expo-web-success route is alive" }, { status: 200 });
+}
+
+export async function POST(request) {
+  try {
+    const payload = await request.json().catch(() => null);
+    console.log("[/api/auth/expo-web-success] POST payload:", payload);
+  } catch (e) {}
+  return Response.json({ ok: true, message: "expo-web-success POST handled" }, { status: 200 });
 }

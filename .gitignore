@@ -1,7 +1,8 @@
-.DS_Store
-/node_modules/
+################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
 
-# React Router
-/.react-router/
-/build/
 /.vs
+.env
+
+/generated/prisma

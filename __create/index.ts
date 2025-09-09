@@ -1,241 +1,123 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
-import nodeConsole from 'node:console';
-import { skipCSRFCheck } from '@auth/core';
-import Credentials from '@auth/core/providers/credentials';
-import { authHandler, initAuthConfig } from '@hono/auth-js';
-import { Pool, neonConfig } from '@neondatabase/serverless';
-import { hash, verify } from 'argon2';
+import path from 'path';
 import { Hono } from 'hono';
-import { contextStorage, getContext } from 'hono/context-storage';
-import { cors } from 'hono/cors';
-import { proxy } from 'hono/proxy';
-import { requestId } from 'hono/request-id';
-import { createHonoServer } from 'react-router-hono-server/node';
-import { serializeError } from 'serialize-error';
-import ws from 'ws';
-import NeonAdapter from './adapter';
-import { getHTMLForErrorPage } from './get-html-for-error-page';
-import { isAuthAction } from './is-auth-action';
-import { API_BASENAME, api } from './route-builder';
-neonConfig.webSocketConstructor = ws;
+import { registerRoutes } from './route-builder';
 
-const als = new AsyncLocalStorage<{ requestId: string }>();
+const app = new Hono();
 
-for (const method of ['log', 'info', 'warn', 'error', 'debug'] as const) {
-  const original = nodeConsole[method].bind(console);
+// adjust this if your dev server mounts the app at a different base
+const mountPrefix = '/api';
 
-  console[method] = (...args: unknown[]) => {
-    const requestId = als.getStore()?.requestId;
-    if (requestId) {
-      original(`[traceId:${requestId}]`, ...args);
-    } else {
-      original(...args);
+// Log every incoming request to help debug routing.
+app.use('*', async (c, next) => {
+  try {
+    const url = new URL(c.req.url);
+    console.log(`[__create] incoming ${c.req.method} ${url.pathname}`);
+  } catch (e) {
+    console.log('[__create] incoming request (failed to parse URL)');
+  }
+  return await next();
+});
+
+/* adapter: wrap a Next-style handler (req: Request) into a Hono handler (c) */
+function adaptMethodHandler(fn: (req: Request) => unknown) {
+  return async (c: any) => {
+    try {
+      const req: Request = c.req;
+      const result = await fn(req);
+      if (result instanceof Response) return result;
+      if (result !== undefined) return c.json(result);
+      return new Response(null, { status: 204 });
+    } catch (err: any) {
+      console.error('[__create] handler error:', err && (err.stack || err.message) || err);
+      return new Response('Internal Server Error', { status: 500 });
     }
   };
 }
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-});
-const adapter = NeonAdapter(pool);
-
-const app = new Hono();
-
-app.use('*', requestId());
-
-app.use('*', (c, next) => {
-  const requestId = c.get('requestId');
-  return als.run({ requestId }, () => next());
-});
-
-app.use(contextStorage());
-
-app.onError((err, c) => {
-  if (c.req.method !== 'GET') {
-    return c.json(
-      {
-        error: 'An error occurred in your app',
-        details: serializeError(err),
-      },
-      500
-    );
+function registerWithHono(appInstance: any, routePath: string, mod: any) {
+  if (!mod) {
+    console.warn(`[__create] module for ${routePath} is undefined — skipping`);
+    return;
   }
-  return c.html(getHTMLForErrorPage(err), 200);
-});
 
-if (process.env.CORS_ORIGINS) {
-  app.use(
-    '/*',
-    cors({
-      origin: process.env.CORS_ORIGINS.split(',').map((origin) => origin.trim()),
-    })
-  );
-}
+  // Build list of paths to register so both prefixed and unprefixed requests match.
+  const paths = [routePath];
+  if (!routePath.startsWith(mountPrefix)) {
+    const prefixed = mountPrefix + routePath;
+    paths.push(prefixed);
+  }
 
-if (process.env.AUTH_SECRET) {
-  app.use(
-    '*',
-    initAuthConfig((c) => ({
-      secret: c.env.AUTH_SECRET,
-      pages: {
-        signIn: '/account/signin',
-        signOut: '/account/logout',
-      },
-      skipCSRFCheck,
-      session: {
-        strategy: 'jwt',
-      },
-      callbacks: {
-        session({ session, token }) {
-          if (token.sub) {
-            session.user.id = token.sub;
+  // Try mounting default export (router) on both paths.
+  if (typeof mod.default === 'function') {
+    for (const p of paths) {
+      try {
+        appInstance.route(p, mod.default);
+        console.log(`[__create] mounted default handler for ${p}`);
+      } catch (e) {
+        console.warn(`[__create] failed to mount default handler for ${p}:`, e);
+      }
+    }
+    return;
+  }
+
+  const mapping: Array<[string, string]> = [
+    ['GET', 'get'],
+    ['POST', 'post'],
+    ['PUT', 'put'],
+    ['DELETE', 'delete'],
+    ['OPTIONS', 'options'],
+    ['PATCH', 'patch'],
+  ];
+
+  let registeredAny = false;
+  for (const [exportName, methodName] of mapping) {
+    if (typeof mod[exportName] === 'function') {
+      for (const p of paths) {
+        if (typeof appInstance[methodName] === 'function') {
+          try {
+            appInstance[methodName](p, adaptMethodHandler(mod[exportName]));
+            console.log(`[__create] registered ${exportName} for ${p}`);
+            registeredAny = true;
+          } catch (e) {
+            console.warn(`[__create] failed to register ${exportName} for ${p}:`, e);
           }
-          return session;
-        },
-      },
-      cookies: {
-        csrfToken: {
-          options: {
-            secure: true,
-            sameSite: 'none',
-          },
-        },
-        sessionToken: {
-          options: {
-            secure: true,
-            sameSite: 'none',
-          },
-        },
-        callbackUrl: {
-          options: {
-            secure: true,
-            sameSite: 'none',
-          },
-        },
-      },
-      providers: [
-        Credentials({
-          id: 'credentials-signin',
-          name: 'Credentials Sign in',
-          credentials: {
-            email: {
-              label: 'Email',
-              type: 'email',
-            },
-            password: {
-              label: 'Password',
-              type: 'password',
-            },
-          },
-          authorize: async (credentials) => {
-            const { email, password } = credentials;
-            if (!email || !password) {
-              return null;
-            }
-            if (typeof email !== 'string' || typeof password !== 'string') {
-              return null;
-            }
-
-            // logic to verify if user exists
-            const user = await adapter.getUserByEmail(email);
-            if (!user) {
-              return null;
-            }
-            const matchingAccount = user.accounts.find(
-              (account) => account.provider === 'credentials'
-            );
-            const accountPassword = matchingAccount?.password;
-            if (!accountPassword) {
-              return null;
-            }
-
-            const isValid = await verify(accountPassword, password);
-            if (!isValid) {
-              return null;
-            }
-
-            // return user object with the their profile data
-            return user;
-          },
-        }),
-        Credentials({
-          id: 'credentials-signup',
-          name: 'Credentials Sign up',
-          credentials: {
-            email: {
-              label: 'Email',
-              type: 'email',
-            },
-            password: {
-              label: 'Password',
-              type: 'password',
-            },
-          },
-          authorize: async (credentials) => {
-            const { email, password } = credentials;
-            if (!email || !password) {
-              return null;
-            }
-            if (typeof email !== 'string' || typeof password !== 'string') {
-              return null;
-            }
-
-            // logic to verify if user exists
-            const user = await adapter.getUserByEmail(email);
-            if (!user) {
-              const newUser = await adapter.createUser({
-                id: crypto.randomUUID(),
-                emailVerified: null,
-                email,
-              });
-              await adapter.linkAccount({
-                extraData: {
-                  password: await hash(password),
-                },
-                type: 'credentials',
-                userId: newUser.id,
-                providerAccountId: newUser.id,
-                provider: 'credentials',
-              });
-              return newUser;
-            }
-            return null;
-          },
-        }),
-      ],
-    }))
-  );
-}
-app.all('/integrations/:path{.+}', async (c, next) => {
-  const queryParams = c.req.query();
-  const url = `${process.env.NEXT_PUBLIC_CREATE_BASE_URL ?? 'https://www.create.xyz'}/integrations/${c.req.param('path')}${Object.keys(queryParams).length > 0 ? `?${new URLSearchParams(queryParams).toString()}` : ''}`;
-
-  return proxy(url, {
-    method: c.req.method,
-    body: c.req.raw.body ?? null,
-    // @ts-ignore - this key is accepted even if types not aware and is
-    // required for streaming integrations
-    duplex: 'half',
-    redirect: 'manual',
-    headers: {
-      ...c.req.header(),
-      'X-Forwarded-For': process.env.NEXT_PUBLIC_CREATE_HOST,
-      'x-createxyz-host': process.env.NEXT_PUBLIC_CREATE_HOST,
-      Host: process.env.NEXT_PUBLIC_CREATE_HOST,
-      'x-createxyz-project-group-id': process.env.NEXT_PUBLIC_PROJECT_GROUP_ID,
-    },
-  });
-});
-
-app.use('/api/auth/*', async (c, next) => {
-  if (isAuthAction(c.req.path)) {
-    return authHandler()(c, next);
+        }
+      }
+    }
   }
-  return next();
-});
-app.route(API_BASENAME, api);
 
-export default await createHonoServer({
-  app,
-  defaultLogger: false,
-});
+  if (typeof mod.handler === 'function') {
+    for (const p of paths) {
+      try {
+        if (typeof appInstance.all === 'function') {
+          appInstance.all(p, adaptMethodHandler(mod.handler));
+          console.log(`[__create] registered handler (all) for ${p}`);
+        } else {
+          if (typeof appInstance.get === 'function') appInstance.get(p, adaptMethodHandler(mod.handler));
+          if (typeof appInstance.post === 'function') appInstance.post(p, adaptMethodHandler(mod.handler));
+          console.log(`[__create] registered handler fallback (GET/POST) for ${p}`);
+        }
+        registeredAny = true;
+      } catch (e) {
+        console.warn(`[__create] failed to register handler for ${p}:`, e);
+      }
+    }
+  }
+
+  if (!registeredAny) {
+    console.warn(`[__create] no HTTP handlers found for ${routePath} — skipping`);
+  }
+}
+
+// Top-level await ensures registration finishes before the app is exported.
+try {
+  const routesRoot = path.join(process.cwd(), 'src', 'app', 'api');
+  await registerRoutes(routesRoot, (routePath: string, mod: any) =>
+    registerWithHono(app, routePath, mod)
+  );
+  console.log('[__create] route registration complete');
+} catch (err) {
+  console.error('[__create] fatal error during route registration:', err);
+}
+
+export default app;
